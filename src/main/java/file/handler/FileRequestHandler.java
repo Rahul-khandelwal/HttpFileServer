@@ -5,131 +5,13 @@ import com.sun.net.httpserver.HttpHandler;
 
 import java.io.FileInputStream;
 import java.io.IOException;
-import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 
 public class FileRequestHandler implements HttpHandler {
-    private final String workingDir;
-
-    public FileRequestHandler(String workingDir) {
-        this.workingDir = workingDir;
-    }
-
-    @Override
-    public void handle(HttpExchange exchange) throws IOException {
-        if ("GET".equals(exchange.getRequestMethod())) {
-            handleGet(exchange);
-        } else {
-            handleNotSupported(exchange);
-        }
-    }
-
-    private void handleGet(HttpExchange exchange) throws IOException {
-        var filePath = Paths.get(workingDir + exchange.getRequestURI().toString());
-        System.out.printf("Serving file {%s}, exists {%s} on thread {%s}, virtual-thread {%s}.%n",
-                filePath,
-                Files.exists(filePath),
-                Thread.currentThread().getName(),
-                Thread.currentThread().isVirtual());
-        if (!Files.exists(filePath)) {
-            handleFileNotFound(exchange);
-            return;
-        }
-
-        if (Files.isDirectory(filePath)) {
-            handleDirectory(exchange, filePath);
-        } else {
-            handleFile(exchange, filePath);
-        }
-    }
-
-    private void handleFileNotFound(HttpExchange exchange) throws IOException {
-        String response = getGenericHtmlBody().formatted(exchange.getRequestURI().getPath(),
-                "<li>File path not present!</li>");
-        sendResponse(exchange, 403, response, "text/html");
-    }
-
-    private void handleDirectory(HttpExchange exchange, Path filePath) throws IOException {
-        StringBuilder links = new StringBuilder();
-        String requestPath = exchange.getRequestURI().getPath();
-
-        // Add a link to the parent directory unless it's the root directory
-        if (!requestPath.equals("/")) {
-            String parentPath = requestPath;
-            if (parentPath.endsWith("/")) {
-                parentPath = parentPath.substring(0, parentPath.length() - 1);
-            }
-            parentPath = parentPath.substring(0, parentPath.lastIndexOf('/') + 1);
-            links.append("<li><span class=\"icon icon-folder\"></span><a href=\"").append(parentPath).append("\">.. (Parent Directory)</a></li>");
-        }
-
-        Files.list(filePath).forEach(path -> {
-            String itemPath = (requestPath.endsWith("/") ? requestPath : requestPath + "/") + path.getFileName();
-            links.append("""
-                    <li>
-                        <span class="icon %s"></span>
-                        <a href="%s%s">%s</a>
-                    </li>
-                    """.formatted(Files.isDirectory(path) ? "icon-folder" : "icon-file",
-                            itemPath,
-                    Files.isDirectory(path) ? "/" : "",
-                    path.getFileName()));
-        });
-        String response = getGenericHtmlBody().formatted(requestPath, links.toString());
-        sendResponse(exchange, 200, response, "text/html");
-    }
-
-    private void handleFile(HttpExchange exchange, Path filePath) throws IOException {
-        String contentType = Files.probeContentType(filePath);
-        if (contentType == null) {
-            contentType = "application/octet-stream";
-        }
-
-        exchange.getResponseHeaders().set("Content-Type", contentType);
-        // Add Cache-Control to prevent caching issues which might lead to inline display
-        exchange.getResponseHeaders().set("Cache-Control", "no-cache, no-store, must-revalidate");
-        exchange.getResponseHeaders().set("Pragma", "no-cache");
-        exchange.getResponseHeaders().set("Expires", "0");
-        // Add Content-Disposition header to force download
-        // This tells the browser to download the file instead of displaying it inline
-        String fileName = filePath.getFileName().toString();
-        exchange.getResponseHeaders().set("Content-Disposition", "attachment; filename=\"" + fileName + "\"");
-
-        exchange.sendResponseHeaders(200, Files.size(filePath));
-
-        // Write file content to the response body
-        try (OutputStream os = exchange.getResponseBody();
-             FileInputStream fis = new FileInputStream(filePath.toFile())) {
-            byte[] buffer = new byte[4096];
-            int bytesRead;
-            while ((bytesRead = fis.read(buffer)) != -1) {
-                os.write(buffer, 0, bytesRead);
-            }
-        }
-        exchange.close();
-    }
-
-    private void handleNotSupported(HttpExchange exchange) throws IOException {
-        String response = getGenericHtmlBody().formatted(exchange.getRequestURI().getPath(),
-                "<li>Only GET requests are supported!</li>");
-        sendResponse(exchange, 403, response, "text/html");
-    }
-
-    private void sendResponse(HttpExchange exchange, int statusCode, String response, String contentType) throws IOException {
-        byte[] responseBytes = response.getBytes(StandardCharsets.UTF_8);
-        exchange.getResponseHeaders().set("Content-Type", contentType);
-        exchange.sendResponseHeaders(statusCode, responseBytes.length);
-        try (OutputStream os = exchange.getResponseBody()) {
-            os.write(responseBytes);
-        }
-        exchange.close();
-    }
-
-    private String getGenericHtmlBody() {
-        return """
+    private static final String GENERIC_HTML_RESPONSE = """
                 <!DOCTYPE html>
                 <html lang="en">
                 <head>
@@ -159,5 +41,116 @@ public class FileRequestHandler implements HttpHandler {
                 </body>
                 </html>
                 """;
+
+    private final String workingDir;
+
+    public FileRequestHandler(String workingDir) {
+        this.workingDir = workingDir;
+    }
+
+    @Override
+    public void handle(HttpExchange exchange) throws IOException {
+        System.out.printf("Request for file {%s} on thread {%s}.%n",
+                exchange.getRequestURI().getPath(),
+                Thread.currentThread().getName());
+
+        if ("GET".equals(exchange.getRequestMethod())) {
+            handleGet(exchange);
+        } else {
+            var response = GENERIC_HTML_RESPONSE.formatted(exchange.getRequestURI().getPath(),
+                    "<li>Only GET requests are supported!</li>");
+            sendResponse(exchange, 403, response);
+        }
+    }
+
+    private void handleGet(HttpExchange exchange) throws IOException {
+        var filePath = Paths.get(workingDir + exchange.getRequestURI().toString());
+
+        if (!Files.exists(filePath)) {
+            var response = GENERIC_HTML_RESPONSE.formatted(exchange.getRequestURI().getPath(),
+                    "<li>File path not present!</li>");
+            sendResponse(exchange, 404, response);
+            return;
+        }
+
+        if (Files.isDirectory(filePath)) {
+            handleDirectoryListing(exchange, filePath);
+        } else {
+            handleFile(exchange, filePath);
+        }
+    }
+
+    private void handleDirectoryListing(HttpExchange exchange, Path filePath) throws IOException {
+        var links = new StringBuilder();
+        var requestPath = exchange.getRequestURI().getPath();
+
+        // Add a link to the parent directory unless it's the root directory
+        if (!requestPath.equals("/")) {
+            var parentPath = requestPath;
+            if (parentPath.endsWith("/")) {
+                parentPath = parentPath.substring(0, parentPath.length() - 1);
+            }
+            parentPath = parentPath.substring(0, parentPath.lastIndexOf('/') + 1);
+            links.append("<li><span class=\"icon icon-folder\"></span><a href=\"")
+                    .append(parentPath).append("\">.. (Parent Directory)</a></li>");
+        }
+
+        try (var files = Files.list(filePath)) {
+            files.forEach(path -> {
+                var itemPath = (requestPath.endsWith("/") ? requestPath : requestPath + "/") + path.getFileName();
+                links.append("""
+                    <li>
+                        <span class="icon %s"></span>
+                        <a href="%s%s">%s</a>
+                    </li>
+                    """.formatted(Files.isDirectory(path) ? "icon-folder" : "icon-file",
+                        itemPath,
+                        Files.isDirectory(path) ? "/" : "",
+                        path.getFileName()));
+            });
+        }
+
+        var response = GENERIC_HTML_RESPONSE.formatted(requestPath, links.toString());
+        sendResponse(exchange, 200, response);
+    }
+
+    private void handleFile(HttpExchange exchange, Path filePath) throws IOException {
+        var contentType = Files.probeContentType(filePath);
+        if (contentType == null) {
+            contentType = "application/octet-stream";
+        }
+
+        exchange.getResponseHeaders().set("Content-Type", contentType);
+        // Add Cache-Control to prevent caching issues which might lead to inline display
+        exchange.getResponseHeaders().set("Cache-Control", "no-cache, no-store, must-revalidate");
+        exchange.getResponseHeaders().set("Pragma", "no-cache");
+        exchange.getResponseHeaders().set("Expires", "0");
+        // Add Content-Disposition header to force download
+        // This tells the browser to download the file instead of displaying it inline
+        var fileName = filePath.getFileName().toString();
+        exchange.getResponseHeaders().set("Content-Disposition", "attachment; filename=\"" + fileName + "\"");
+
+        exchange.sendResponseHeaders(200, Files.size(filePath));
+
+        // Write file content to the response body
+        try (var os = exchange.getResponseBody();
+             var fis = new FileInputStream(filePath.toFile())) {
+            var buffer = new byte[4096];
+            int bytesRead;
+            while ((bytesRead = fis.read(buffer)) != -1) {
+                os.write(buffer, 0, bytesRead);
+            }
+        }
+        exchange.close();
+    }
+
+    private void sendResponse(HttpExchange exchange, int statusCode, String response) throws IOException {
+        var responseBytes = response.getBytes(StandardCharsets.UTF_8);
+        exchange.getResponseHeaders().set("Content-Type", "text/html");
+        exchange.sendResponseHeaders(statusCode, responseBytes.length);
+        try (var os = exchange.getResponseBody()) {
+            os.write(responseBytes);
+        }
+        exchange.close();
     }
 }

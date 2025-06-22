@@ -10,14 +10,15 @@ import java.util.concurrent.ThreadFactory;
 
 public class FileServer {
     public static void main(String[] args) throws IOException {
+        int portNum = 8001;
         String workingDir = System.getProperty("user.dir");
         final ThreadFactory factory = Thread.ofVirtual().name("virtual-thread-", 0).factory();
         HttpServer fileServer = HttpServer.create();
         fileServer.setExecutor(Executors.newThreadPerTaskExecutor(factory));
         fileServer.createContext("/", new FileRequestHandler(workingDir));
-        fileServer.bind(new InetSocketAddress(8001), 0);
+        fileServer.bind(new InetSocketAddress(portNum), 0);
         fileServer.start();
-        System.out.println("Server started on port 8001. Serving files from: " + workingDir);
-        System.out.println("Access in browser: http://localhost:8001/");
+        System.out.printf("Server started on port %d. Serving files from: %s%n", portNum, workingDir);
+        System.out.printf("Access in browser: http://localhost:%d/%n", portNum);
     }
 }

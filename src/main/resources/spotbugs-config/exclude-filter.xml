@@ -1,0 +1,7 @@
+<FindBugsFilter>
+    <Match>
+        <Class name="file.handler.FileRequestHandler" />
+        <Method name="handleDirectoryListing" />
+        <Bug pattern="NP_NULL_ON_SOME_PATH_FROM_RETURN_VALUE" />
+    </Match>
+</FindBugsFilter>
